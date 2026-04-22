@@ -1,63 +1,86 @@
 #!/usr/bin/env python3
 """
-Быстрый чекер прокси-конфигураций:
-- удаляет дубликаты (по ключевым параметрам)
-- проверяет TCP-доступность сервера (connect)
-- сохраняет только рабочие ссылки
-
+Быстрая проверка и дедупликация списка URL-адресов подписок.
 Использование:
-    python fast_checker.py --input файл_с_конфигами.txt --output чистый_список.txt [--threads 50] [--timeout 3]
+    python checker.py --input configs.txt --output clean_configs.txt [--threads 10]
 """
 import argparse
-import base64
-import json
 import logging
-import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Set, Tuple
-from urllib.parse import urlparse
+from typing import List, Set
+
+import requests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-SUPPORTED_PROTOCOLS = ['vmess', 'vless', 'trojan', 'ss', 'ssr', 'hysteria2', 'tuic']
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+}
 
-
-def normalize_link(link: str) -> str:
-    """Приводит ссылку к каноническому виду для дедупликации."""
+def check_url(url: str, timeout: int = 10) -> bool:
+    """Возвращает True, если URL отдаёт 200 OK."""
     try:
-        proto = link.split('://')[0].lower()
-        if proto == 'vmess':
-            b64 = link[8:]
-            padding = 4 - (len(b64) % 4)
-            if padding != 4:
-                b64 += '=' * padding
-            data = json.loads(base64.b64decode(b64).decode('utf-8'))
-            return f"vmess://{data.get('add', '')}:{data.get('port', '')}@{data.get('id', '')}"
-        elif proto in ('vless', 'trojan'):
-            parsed = urlparse(link)
-            return f"{proto}://{parsed.username}@{parsed.hostname}:{parsed.port}"
-        elif proto == 'ss':
-            parsed = urlparse(link)
-            userinfo = parsed.username
-            if userinfo:
-                try:
-                    decoded = base64.b64decode(userinfo).decode('utf-8')
-                    method, password = decoded.split(':', 1)
-                    return f"ss://{method}:{password}@{parsed.hostname}:{parsed.port}"
-                except Exception:
-                    pass
-            return f"ss://{parsed.hostname}:{parsed.port}"
-        else:
-            return link
-    except Exception:
-        return link
+        # HEAD‑запрос для экономии трафика
+        resp = requests.head(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        if resp.status_code == 405:  # Метод не поддерживается
+            resp = requests.get(url, headers=HEADERS, timeout=timeout, stream=True)
+            resp.close()
+        return resp.status_code == 200
+    except requests.RequestException:
+        return False
 
-
-def extract_host_port(link: str) -> Tuple[str, int]:
-    """Извлекает хост и порт из прокси-ссылки."""
+def process_urls(input_file: str, output_file: str, threads: int = 10) -> None:
+    # Чтение
     try:
-        proto = link.split('://')[0].lower()
-        if proto == 'vmess':
-            b
+        with open(input_file, 'r', encoding='utf-8') as f:
+            raw_urls = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+    except FileNotFoundError:
+        logger.error(f"Файл {input_file} не найден")
+        sys.exit(1)
+
+    logger.info(f"Прочитано {len(raw_urls)} URL")
+
+    # Дедупликация (точное совпадение строк)
+    unique_urls: List[str] = []
+    seen: Set[str] = set()
+    for url in raw_urls:
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+
+    logger.info(f"Уникальных URL: {len(unique_urls)} (удалено {len(raw_urls) - len(unique_urls)})")
+
+    # Проверка доступности
+    logger.info(f"Проверка доступности (потоков: {threads})...")
+    working_urls: List[str] = []
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        future_to_url = {executor.submit(check_url, url): url for url in unique_urls}
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                if future.result():
+                    working_urls.append(url)
+                    logger.debug(f"✅ {url}")
+                else:
+                    logger.warning(f"❌ Недоступен: {url}")
+            except Exception as e:
+                logger.error(f"Ошибка {url}: {e}")
+
+    # Сохранение
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(working_urls))
+
+    logger.info(f"Готово. Рабочих URL: {len(working_urls)} → {output_file}")
+
+def main():
+    parser = argparse.ArgumentParser(description='Проверка и дедупликация URL подписок.')
+    parser.add_argument('--input', required=True, help='Входной файл (например, configs.txt)')
+    parser.add_argument('--output', default='clean_configs.txt', help='Выходной файл')
+    parser.add_argument('--threads', type=int, default=10, help='Число потоков')
+    args = parser.parse_args()
+    process_urls(args.input, args.output, args.threads)
+
+if __name__ == '__main__':
+    main()
