@@ -1,0 +1,19 @@
+name: Check and Clean Configs
+
+on:
+  workflow_dispatch:  # только ручной запуск
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run checker
+        run: python checker.py --input configs.txt --output clean_configs.txt --threads 10
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cleaned-configs
+          path: clean_configs.txt
