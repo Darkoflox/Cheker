@@ -10,7 +10,13 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Set
 
-import requests
+# Обработка отсутствия библиотеки requests
+try:
+    import requests
+except ImportError:
+    print("Ошибка: библиотека 'requests' не установлена.")
+    print("Установите её командой: pip install requests")
+    sys.exit(1)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -22,23 +28,34 @@ HEADERS = {
 def check_url(url: str, timeout: int = 10) -> bool:
     """Возвращает True, если URL отдаёт 200 OK."""
     try:
-        # HEAD‑запрос для экономии трафика
         resp = requests.head(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
-        if resp.status_code == 405:  # Метод не поддерживается
+        if resp.status_code == 405:
             resp = requests.get(url, headers=HEADERS, timeout=timeout, stream=True)
             resp.close()
         return resp.status_code == 200
-    except requests.RequestException:
-        return False
+    except requests.exceptions.Timeout:
+        logger.debug(f"Таймаут: {url}")
+    except requests.exceptions.ConnectionError:
+        logger.debug(f"Ошибка соединения: {url}")
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Ошибка запроса {url}: {e}")
+    return False
 
 def process_urls(input_file: str, output_file: str, threads: int = 10) -> None:
-    # Чтение
+    # Проверка существования входного файла
     try:
         with open(input_file, 'r', encoding='utf-8') as f:
             raw_urls = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     except FileNotFoundError:
-        logger.error(f"Файл {input_file} не найден")
+        logger.error(f"Файл '{input_file}' не найден. Убедитесь, что он существует.")
         sys.exit(1)
+    except Exception as e:
+        logger.error(f"Не удалось прочитать файл '{input_file}': {e}")
+        sys.exit(1)
+
+    if not raw_urls:
+        logger.warning("Входной файл пуст. Выходной файл не создан.")
+        return
 
     logger.info(f"Прочитано {len(raw_urls)} URL")
 
@@ -62,17 +79,20 @@ def process_urls(input_file: str, output_file: str, threads: int = 10) -> None:
             try:
                 if future.result():
                     working_urls.append(url)
-                    logger.debug(f"✅ {url}")
+                    logger.info(f"✅ {url}")
                 else:
                     logger.warning(f"❌ Недоступен: {url}")
             except Exception as e:
-                logger.error(f"Ошибка {url}: {e}")
+                logger.error(f"Непредвиденная ошибка при проверке {url}: {e}")
 
-    # Сохранение
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(working_urls))
-
-    logger.info(f"Готово. Рабочих URL: {len(working_urls)} → {output_file}")
+    # Сохранение результата
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(working_urls))
+        logger.info(f"Готово. Рабочих URL: {len(working_urls)} → {output_file}")
+    except Exception as e:
+        logger.error(f"Не удалось записать выходной файл '{output_file}': {e}")
+        sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description='Проверка и дедупликация URL подписок.')
@@ -80,6 +100,11 @@ def main():
     parser.add_argument('--output', default='clean_configs.txt', help='Выходной файл')
     parser.add_argument('--threads', type=int, default=10, help='Число потоков')
     args = parser.parse_args()
+
+    if args.threads < 1:
+        logger.error("Число потоков должно быть >= 1")
+        sys.exit(1)
+
     process_urls(args.input, args.output, args.threads)
 
 if __name__ == '__main__':
