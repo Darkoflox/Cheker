@@ -11,6 +11,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write          # ✅ разрешаем коммиты в репозиторий
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +27,15 @@ jobs:
       - name: Run checker
         run: python checker.py --input configs.txt --output clean_configs.txt --threads 10
 
-      - name: Upload cleaned configs
+      # 👇 Этот шаг коммитит clean_configs.txt прямо в репозиторий
+      - name: Commit clean_configs.txt to repository
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🔄 Обновление clean_configs.txt"
+          file_pattern: 'clean_configs.txt'
+
+      # 👇 Этот шаг остаётся как резервный – артефакт всегда можно скачать вручную
+      - name: Upload artifact (backup)
         uses: actions/upload-artifact@v4
         with:
           name: cleaned-configs
